@@ -22,7 +22,7 @@ Think of it like a building's keycard system, because that's really what it is:
 
 ```mermaid
 flowchart LR
-    subgraph RBACobject["RBAC Objectd (myapp_1)"]
+    subgraph RBACobject["RBAC Objects (myapp_1)"]
         RBACobject1["Subject (User, Group, or ServiceAccount)"]
         RBACobject2["Role"]
         RBACobject3["ClusterRole"]
@@ -32,7 +32,7 @@ flowchart LR
 
     subgraph Keycard["Keycard Analogy"]
         KeycardAttr1["The person (Who is holding a card)"]
-        KeycardAttr2["The list of doors (that a type of card can open — but only in one building (namespace))"]
+        KeycardAttr2["The list of doors (that a type of card can open — but only in one building (namespace))" " Note: A Role with no RoleBinding does nothing. It's a card design sitting in a drawer — nobody's holding it."]
         KeycardAttr3["A card-template (that works the same way in every building on the campus, or opens doors that don't belong to any single building (like the parking garage — a cluster-scoped resource))"]
         KeycardAttr4["The act (that is actually handing a specific person a specific card, valid for one building)"]
         KeycardAttr5["A specific person ( that is handing a card that is valid campus-wide)"]
