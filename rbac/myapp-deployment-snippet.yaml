@@ -1,0 +1,16 @@
+# myapp-deployment-snippet.yaml: shows a Deployment that:
+#   explicitly uses serviceAccountName: myapp (never relies on default),
+#   has automountServiceAccountToken: false at pod spec level.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  namespace: team-alpha
+spec:
+  template:
+    spec:
+      serviceAccountName: myapp     # never omit this — omitting it silently uses 'default'
+      automountServiceAccountToken: false
+      containers:
+        - name: myapp
+          image: ghcr.io/org/myapp@sha256:...

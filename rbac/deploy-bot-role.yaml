@@ -1,0 +1,18 @@
+# For the minority of pods that genuinely need API access 
+# (an operator, a controller, a CI runner), scope a Role to 
+# exactly what that ServiceAccount does and bind it — 
+# same pattern, just with kind: ServiceAccount as the subject
+#
+# deploy-bot-role.yaml: defines a namespaced Role that can 
+#  get/list/patch deployments in team-alpha (enough to trigger 
+#  rollouts by patching annotations, but not to fully change specs).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployment-restarter
+  namespace: team-alpha
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]     # patch, not update — enough to bump an annotation
+    # to trigger a rollout, not enough to change the container spec entirely

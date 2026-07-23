@@ -1,0 +1,17 @@
+# This RoleBinding gives the `team-alpha-sre` group access to the built-in `view` 
+# role inside the `team-alpha` namespace. Because `view` is 
+# aggregated, it also includes the additional observability permissions from the 
+# labeled ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: view-plus-observability
+  namespace: team-alpha
+subjects:
+  - kind: Group
+    name: team-alpha-sre
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole       # <-- binding a ClusterRole with a RoleBinding, namespace-scoped
+  name: view              # 'view' now includes platform-observability's rules automatically
+  apiGroup: rbac.authorization.k8s.io

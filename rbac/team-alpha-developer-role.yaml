@@ -1,0 +1,21 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: developer
+  namespace: team-alpha
+rules:
+  - apiGroups: ["", "apps", "batch"]
+    resources: ["pods", "deployments", "replicasets", "services", "configmaps", "jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log", "pods/exec"]
+    verbs: ["get", "create"]     # exec/log access — grant deliberately, not by accident via wildcard
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]       # read-only on secrets — developers consume them, don't mint them
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # Deliberately absent: no resourcequotas, no limitranges, no networkpolicies,
+  # no rbac.authorization.k8s.io/* — a developer role should never be able to
+  # grant itself more permissions than it started with

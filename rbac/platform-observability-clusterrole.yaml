@@ -1,0 +1,20 @@
+# - Building your own aggregated ClusterRole (the way Kubernetes builds its own)
+# - Rather than writing one enormous rule list, Kubernetes composes admin/edit/view 
+#   from smaller ClusterRoles tagged with a label, and an aggregation controller 
+#   merges them automatically. Build your platform's own extension the same way
+# - This ClusterRole does not need to be bound directly to users. Because it has 
+#   the `aggregate-to-view` label, Kubernetes merges its rules into the built-in 
+#   `view` ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: platform-observability
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-view: "true"   # merges into every ClusterRoleBinding using "view"
+rules:
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["prometheusrules", "servicemonitors"]
+    verbs: ["get", "list", "watch"]
