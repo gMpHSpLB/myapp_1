@@ -14,6 +14,8 @@
 •	A live demonstration of a current, real gotcha in the built-in edit/admin roles that catches teams off guard in production
 •	A full audit workflow using kubectl auth can-i and impersonation to prove what an identity can actually do — not what you think it can do
 
+Check this : [How to run this tutorial](Playbook-How-to-run-this-tutorial.md) 
+
 # What is multitenant Kubernetes? 
 Multitenant Kubernetes means one Kubernetes cluster is shared by multiple tenants while still keeping their workloads, access, and resources separated enough for safety and control. A tenant can be a team, a project, or a customer in a SaaS platform.
 
@@ -347,3 +349,323 @@ This quota limits how much compute, memory, pod count, and PVC usage
 the namespace can consume. When quotas are enforced for CPU and memory, 
 pods usually need matching requests or limits, otherwise admission may 
 reject them.
+
+## ServiceAccount Philosophy: No Token by Default, Separate Bot for API Ops
+This project follows a simple but strong ServiceAccount strategy:
+
+  - **Application pods do not get API tokens by default.**
+  - **Automation that needs API access uses a separate, narrowly scoped ServiceAccount.**
+
+Most workloads never call the Kubernetes API directly, so mounting a token only adds attack 
+surface without benefit. By disabling automatic token mounting and using dedicated ServiceAccounts, 
+we reduce the chance of credential theft from compromised pods.
+
+#### Philosophy summary
+
+- **No token by default for app pods.** Application ServiceAccounts set `automountServiceAccountToken: false` and deployments explicitly reference them.
+- **Separate bot ServiceAccount for API ops.** A dedicated ServiceAccount like `deploy-bot` is bound to a narrowly scoped Role, giving it only the permissions required for rollout operations.
+- **Least privilege everywhere.** Application pods cannot reach the API accidentally, and automation cannot change more than it needs to.
+- 
+#### 1. Per-application ServiceAccount with no token
+Check `myapp-serviceaccount.yaml`
+
+This ServiceAccount belongs to the `myapp` application and has `automountServiceAccountToken: false`, so any pod using it will not receive a Kubernetes API token mount by default.
+
+Check `myapp-deployment-snippet.yaml`
+The deployment:
+
+- Explicitly sets `serviceAccountName: myapp` instead of relying on the `default` ServiceAccount.
+- Repeats `automountServiceAccountToken: false` at the pod spec level for extra safety.
+
+Together, these two manifests ensure `myapp` runs without a mounted API token unless you deliberately add one.
+
+#### 2. Separate deploy-bot ServiceAccount for API operations
+
+For the minority of pods that genuinely need API access (operators, controllers, CI/CD bots), this project uses a **separate ServiceAccount** plus a tightly scoped Role.
+
+Check : `deploy-bot-role.yaml`:
+
+This Role allows:
+
+- `get` and `list` deployments for introspection.
+- `patch` deployments, which is enough to bump an annotation and trigger a rollout, but not to fully replace the spec.
+
+Check `deploy-bot-binding.yaml`:
+
+This RoleBinding:
+
+- Attaches the `deployment-restarter` Role to the `deploy-bot` ServiceAccount in `team-alpha`.
+- Grants only the minimal deployment restart capability to that bot, and to nothing else.
+
+You also define the `deploy-bot` ServiceAccount itself (for example):
+
+This ServiceAccount is allowed to have an API token because its purpose is automation that talks to the Kubernetes API.
+
+## Namespace Isolation as Defense-in-Depth
+
+Namespace isolation in Kubernetes is not a single switch; it is a **stack of controls** that work together. RBAC alone only guards API actions. It does not stop a running pod from talking to other namespaces over the network, running as root, or consuming all available resources.
+
+A properly isolated tenant namespace layers at least four mechanisms:
+
+1. **RBAC (who can act).**  
+   Controls which users, groups, or ServiceAccounts can create, modify, or delete API objects in the namespace [web:68][web:151].
+
+2. **Pod Security Admission (what workloads can be).**  
+   Enforces Pod Security Standards such as `restricted` via namespace labels, limiting how pods are configured (user IDs, capabilities, host access, etc.).
+
+3. **ResourceQuota / LimitRange (how much they can consume).**  
+   Caps namespace-wide CPU, memory, pod count, and storage usage, and sets sensible defaults so a single untuned pod cannot exhaust the entire namespace.
+
+4. **NetworkPolicy (who can talk to whom).**  
+   Restricts ingress and egress traffic so pods cannot freely communicate across namespaces or to the internet without explicit allow rules.
+
+Each layer addresses a different part of the threat model. Missing any one of them gives you the *appearance* of isolation, not the reality.
+
+### ValidatingAdmissionPolicy: rules at admission time
+
+Beyond these four layers, Kubernetes now includes `ValidatingAdmissionPolicy`, which lets you define cluster-wide or per-namespace admission rules using CEL expressions.
+
+#### ValidatingAdmissionPolicy and CEL Expressions
+
+Kubernetes uses **Common Expression Language (CEL)** inside `ValidatingAdmissionPolicy` to enforce admission-time rules without external webhooks. CEL is a small, safe expression language designed for evaluating boolean conditions over resource data (like Pod specs).
+
+#### Example 1: Require resource requests and limits for all tenant pods
+
+The following example policy requires every container in a Pod to define both `resources.requests` 
+and `resources.limits`. This aligns with a multi-tenant, namespace-scoped model where tenants must 
+declare resource budgets.
+
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: require-resources-for-pods
+spec:
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  validations:
+    - expression: >
+        object.spec.containers.all(c,
+          has(c.resources) &&
+          has(c.resources.requests) &&
+          has(c.resources.limits)
+        )
+      message: "All containers must define resources.requests and resources.limits."
+      reason: "Invalid"
+```
+
+Key points:
+
+- `object` in the expression is the incoming Pod object.
+- `object.spec.containers.all(...)` iterates over all containers using CEL’s `all` helper.
+- `has(c.resources.requests)` and `has(c.resources.limits)` ensure both are set.
+
+To make this policy configurable per namespace, you can use a parameter ConfigMap and a binding:
+Example 2:
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tenant-pod-policy
+  namespace: team-alpha
+data:
+  enforceResources: "true"
+```
+
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: require-resources-for-pods-binding
+spec:
+  policyName: require-resources-for-pods
+  paramRef:
+    name: tenant-pod-policy
+    # No namespace here: API server will look for the ConfigMap
+    # in the namespace of the incoming Pod request[1][2]
+  validationActions: ["Deny"]
+```
+
+This setup lets you:
+- Scope the policy to namespaces via parameters.
+- Keep rules in-tree with CEL instead of running a separate Kyverno/OPA controller [web:155][web:159].
+
+Key points:
+
+- The **policy** defines the CEL validation logic (for example, “no `latest` image tags” or “all pods must set resource limits”).
+- A **parameter resource** (CRD or ConfigMap) can provide namespace-specific values.
+- The **binding** activates the policy and uses `paramRef` to select the parameter resource; if you omit the namespace on `paramRef`, the API server looks for parameters in the same namespace as the incoming request.
+
+In practice, this gives you an in-tree alternative to tools like Kyverno or OPA for admission-time checks without maintaining a separate webhook controller .
+
+#### Two distinct enforcement points
+
+It is useful to distinguish two different enforcement points in Kubernetes:
+
+- **RBAC decides who can attempt an action.**  
+  It answers “Is this subject allowed to create or modify this resource at all?”.
+
+- **ValidatingAdmissionPolicy decides whether the action is allowed to succeed.**  
+  It answers “Regardless of who is asking, does this resource configuration meet our policy?”.
+
+## Auditing What an Identity Can Actually Do
+
+I do not trust RBAC YAML in isolation; I verify effective permissions using `kubectl auth can-i` and RBAC plugins. This is part of my defense-in-depth approach to multi-tenant clusters.
+
+### Targeted checks with kubectl auth can-i
+
+Example: check whether the `deploy-bot` ServiceAccount can delete deployments in `team-alpha`:
+
+```bash
+kubectl auth can-i delete deployments \
+  --as=system:serviceaccount:team-alpha:deploy-bot \
+  -n team-alpha
+# Expected: "no" — the Role only grants get/list/patch
+```
+
+List all effective permissions for `deploy-bot` in `team-alpha`:
+
+```bash
+kubectl auth can-i --list \
+  --as=system:serviceaccount:team-alpha:deploy-bot \
+  -n team-alpha
+```
+
+Check whether the `team-alpha-developers` group can create secrets:
+
+```bash
+kubectl auth can-i create secrets \
+  --as=someone@example.com \
+  --as-group=team-alpha-developers \
+  -n team-alpha
+```
+
+Cross-namespace leak check — this **must** return `no` to avoid tenant breakout:
+
+```bash
+kubectl auth can-i get pods \
+  --as=system:serviceaccount:team-alpha:deploy-bot \
+  -n team-beta
+```
+
+These checks validate that the RBAC configuration matches the intended least-privilege design and that service accounts cannot escape their tenant namespace.
+
+#### Using RBAC plugins: rbac-lookup and who-can
+
+I also use krew plugins to audit permissions more broadly:
+
+```bash
+kubectl krew install rbac-lookup
+kubectl krew install who-can
+```
+
+Find all bindings for the `deploy-bot` ServiceAccount across the cluster:
+
+```bash
+kubectl rbac-lookup deploy-bot --kind serviceaccount
+```
+
+Reverse lookup: who can delete deployments in `team-alpha`?
+
+```bash
+kubectl who-can delete deployments -n team-alpha
+```
+
+These tools let me answer:
+
+- “Which Roles and RoleBindings are attached to this identity?”
+- “Who can perform a sensitive action in this namespace?”
+
+Together with `kubectl auth can-i`, this forms a repeatable RBAC audit workflow that I can run in CI or as part of periodic security reviews.
+
+### RBAC Audit Checklist
+
+I treat RBAC as something to **prove**, not just configure. This checklist shows how I audit what identities can actually do in a cluster using `kubectl auth can-i` and RBAC-focused plugins.
+
+#### 1. Verify sensitive ServiceAccounts
+
+- Can the `deploy-bot` ServiceAccount delete deployments in `team-alpha`?
+
+  ```bash
+  kubectl auth can-i delete deployments \
+    --as=system:serviceaccount:team-alpha:deploy-bot \
+    -n team-alpha
+  # Expected: "no" — Role only grants get/list/patch
+  ```
+
+- List all effective permissions for `deploy-bot` in `team-alpha`:
+
+  ```bash
+  kubectl auth can-i --list \
+    --as=system:serviceaccount:team-alpha:deploy-bot \
+    -n team-alpha
+  ```
+
+These checks validate that automation bots have only the minimum required privileges.
+
+#### 2. Validate group-based privileges
+
+- Does the `team-alpha-developers` group have secret-write access?
+
+  ```bash
+  kubectl auth can-i create secrets \
+    --as=someone@example.com \
+    --as-group=team-alpha-developers \
+    -n team-alpha
+  ```
+
+This helps confirm that developer groups cannot mint or modify secrets unexpectedly, which is a key least-privilege control.
+
+#### 3. Check cross-namespace isolation
+
+- Cross-namespace leak check — must return `no`:
+
+  ```bash
+  kubectl auth can-i get pods \
+    --as=system:serviceaccount:team-alpha:deploy-bot \
+    -n team-beta
+  ```
+
+If this ever returns `yes`, it indicates a tenant breakout risk and needs immediate investigation [web:149][web:151].
+
+#### 4. Use RBAC plugins for broader review
+
+Install RBAC auditing plugins via krew:
+
+```bash
+kubectl krew install rbac-lookup
+kubectl krew install who-can
+```
+
+Then:
+
+- Find bindings for the `deploy-bot` ServiceAccount across the cluster:
+
+  ```bash
+  kubectl rbac-lookup deploy-bot --kind serviceaccount
+  ```
+
+- Reverse lookup: who can delete deployments in `team-alpha`?
+
+  ```bash
+  kubectl who-can delete deployments -n team-alpha
+  ```
+
+These commands answer “what is bound to this identity?” and “who can perform this action?” and are useful during periodic security reviews [web:167][web:170].
+
+#### 5. Run the checklist regularly
+
+I run these checks:
+
+- After RBAC changes.
+- Before onboarding a new team or tenant namespace.
+- As part of periodic security reviews in production clusters.
+
+This keeps RBAC aligned with least-privilege goals and makes it easier to demonstrate access controls in audits and interviews .

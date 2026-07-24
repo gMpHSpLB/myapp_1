@@ -3,9 +3,9 @@
 # exactly what that ServiceAccount does and bind it — 
 # same pattern, just with kind: ServiceAccount as the subject
 #
-# deploy-bot-role.yaml: defines a namespaced Role that can 
-# get/list/patch deployments in team-alpha (enough to trigger 
-# rollouts by patching annotations, but not to fully change specs).
+# deploy-bot-binding.yaml: binds that Role to a ServiceAccount 
+# named deploy-bot in team-alpha, so only that bot has the minimal 
+# deployment-restart ability.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:

@@ -1,0 +1,278 @@
+SHELL := /bin/bash
+
+# Default target
+.DEFAULT_GOAL := help
+
+# ------------------------------ GLOBAL CONFIG --------------------------------------
+RED    := \033[1;31m
+YELLOW := \033[1;33m
+GREEN  := \033[1;32m
+CYAN   := \033[1;36m
+RESET  := \033[0m
+
+NAMESPACE_TEAM_ALPHA := team-alpha
+NAMESPACE_TEAM_BETA  := team-beta
+
+POD_SECURITY_ADMISSION_ENFORCEMENT_LEVEL := restricted
+LABEL_TEAM_1 := alpha
+LABEL_TEAM_2 := beta
+
+RESOURCE_QUOTA_TEAM_ALPHA_FILE              := quotas/team-alpha-quota.yaml
+RBAC_TEAM_ALPHA_ROLE_FILE                   := rbac/team-alpha-developer-role.yaml
+RBAC_TEAM_ALPHA_VIEWER_ROLE_FILE            := rbac/team-alpha-viewer-role.yaml
+RBAC_TEAM_ALPHA_DEVELOPER_ROLEBINDING_FILE  := rbac/team-alpha-developer-binding.yaml
+RBAC_PLATFORM_OBSERVABILITY_CLUSTERROLE_FILE := rbac/platform-observability-clusterrole.yaml
+RBAC_TEAM_ALPHA_PLATFORM_EXTENDED_VIEW_FILE := rbac/team-alpha-platform-extended-view.yaml
+
+MYAPP_SERVICEACCOUNT_FILE      := rbac/myapp-serviceaccount.yaml
+MYAPP_DEPLOYMENT_FILE          := rbac/myapp-deployment-snippet.yaml
+DEPLOY_BOT_SERVICEACCOUNT_FILE := rbac/deploy-bot-serviceaccount.yaml
+DEPLOY_BOT_ROLE_FILE           := rbac/deploy-bot-role.yaml
+DEPLOY_BOT_BINDING_FILE        := rbac/deploy-bot-binding.yaml
+DEFAULT_SA_TEAM_ALPHA_FILE     := rbac/team-alpha-default-serviceaccount.yaml
+
+# RBAC audit identities and namespaces (Section 7)
+TEAM_ALPHA_NS 				   := team-alpha
+TEAM_BETA_NS  				   := team-beta
+DEPLOY_BOT_SA        		   := system:serviceaccount:$(TEAM_ALPHA_NS):deploy-bot
+TEAM_ALPHA_DEV_GROUP           := team-alpha-developers
+
+# ------------------------------ HELP ----------------------------------------------
+.PHONY: help
+help: ## Show all available targets with short descriptions.
+	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make <target>\n\nTargets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ { printf "  %-72s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+
+# ------------------------------ COMMON CHECKS --------------------------------------
+.PHONY: check-kubectl
+check-kubectl:
+	@command -v kubectl >/dev/null 2>&1 || (echo "kubectl is not installed or not on PATH" && exit 1)
+
+# -----------------------------------------------------------------------------------
+# ------------------------------ SECTION 2: NAMESPACES + POD SECURITY ---------------
+# -----------------------------------------------------------------------------------
+.PHONY: create-namespaces-for-team-alpha-and-team-beta
+create-namespaces-for-team-alpha-and-team-beta: check-kubectl ## Create or update namespaces for team-alpha and team-beta
+	@printf '$(CYAN)%s$(RESET)\n' "Apply namespace $(NAMESPACE_TEAM_ALPHA)"
+	@kubectl create namespace $(NAMESPACE_TEAM_ALPHA) --dry-run=client -o yaml | kubectl apply -f -
+	@printf '$(CYAN)%s$(RESET)\n' "Apply namespace $(NAMESPACE_TEAM_BETA)"
+	@kubectl create namespace $(NAMESPACE_TEAM_BETA) --dry-run=client -o yaml | kubectl apply -f -
+
+.PHONY: assign-labels-and-pod-security-admission-enforcement-to-namespaces
+assign-labels-and-pod-security-admission-enforcement-to-namespaces: check-kubectl ## Label namespaces with team and Pod Security Admission
+	@printf '$(CYAN)%s$(RESET)\n' "Label namespace $(NAMESPACE_TEAM_ALPHA)"
+	@kubectl label namespace $(NAMESPACE_TEAM_ALPHA) team=$(LABEL_TEAM_1) pod-security.kubernetes.io/enforce=$(POD_SECURITY_ADMISSION_ENFORCEMENT_LEVEL) --overwrite
+	@printf '$(CYAN)%s$(RESET)\n' "Label namespace $(NAMESPACE_TEAM_BETA)"
+	@kubectl label namespace $(NAMESPACE_TEAM_BETA) team=$(LABEL_TEAM_2) pod-security.kubernetes.io/enforce=$(POD_SECURITY_ADMISSION_ENFORCEMENT_LEVEL) --overwrite
+
+.PHONY: delete-namespaces
+delete-namespaces: check-kubectl ## Delete team-alpha and team-beta namespaces
+	@printf '$(CYAN)%s$(RESET)\n' "Delete namespace $(NAMESPACE_TEAM_ALPHA)"
+	@kubectl delete namespace $(NAMESPACE_TEAM_ALPHA) --ignore-not-found
+	@printf '$(CYAN)%s$(RESET)\n' "Delete namespace $(NAMESPACE_TEAM_BETA)"
+	@kubectl delete namespace $(NAMESPACE_TEAM_BETA) --ignore-not-found
+
+# -----------------------------------------------------------------------------------
+# ------------------------------ SECTION 2b: QUOTA ----------------------------------
+# -----------------------------------------------------------------------------------
+# A basic per-tenant quota 
+.PHONY: apply-quota-to-namespace-team-alpha
+apply-quota-to-namespace-team-alpha: check-kubectl ## Apply ResourceQuota for team-alpha namespace
+	@test -f $(RESOURCE_QUOTA_TEAM_ALPHA_FILE) || (echo "Missing file: $(RESOURCE_QUOTA_TEAM_ALPHA_FILE)" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Apply ResourceQuota for team-alpha"
+	@kubectl apply -f $(RESOURCE_QUOTA_TEAM_ALPHA_FILE)
+
+# -----------------------------------------------------------------------------------
+# ------------------------------ SECTION 3: NAMESPACE-SCOPED RBAC -------------------
+# -----------------------------------------------------------------------------------
+.PHONY: apply-rbac-role-to-namespace-team-alpha
+apply-rbac-role-to-namespace-team-alpha: check-kubectl ## Apply developer Role for team-alpha namespace
+	@test -f $(RBAC_TEAM_ALPHA_ROLE_FILE) || (echo "Missing file: $(RBAC_TEAM_ALPHA_ROLE_FILE)" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Apply developer RBAC Role for team-alpha"
+	@kubectl apply -f $(RBAC_TEAM_ALPHA_ROLE_FILE)
+
+.PHONY: apply-rbac-viewer-role-to-namespace-team-alpha
+apply-rbac-viewer-role-to-namespace-team-alpha: check-kubectl ## Apply viewer Role for team-alpha namespace
+	@test -f $(RBAC_TEAM_ALPHA_VIEWER_ROLE_FILE) || (echo "Missing file: $(RBAC_TEAM_ALPHA_VIEWER_ROLE_FILE)" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Apply viewer RBAC Role for team-alpha"
+	@kubectl apply -f $(RBAC_TEAM_ALPHA_VIEWER_ROLE_FILE)
+
+.PHONY: apply-rbac-developer-rolebinding-to-namespace-team-alpha
+apply-rbac-developer-rolebinding-to-namespace-team-alpha: check-kubectl ## Apply developer RoleBinding for team-alpha namespace
+	@test -f $(RBAC_TEAM_ALPHA_DEVELOPER_ROLEBINDING_FILE) || (echo "Missing file: $(RBAC_TEAM_ALPHA_DEVELOPER_ROLEBINDING_FILE)" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Apply developer RoleBinding for team-alpha"
+	@kubectl apply -f $(RBAC_TEAM_ALPHA_DEVELOPER_ROLEBINDING_FILE)
+
+# -----------------------------------------------------------------------------------
+# ------------------------------ SECTION 4: AGGREGATED CLUSTERROLE ------------------
+# -----------------------------------------------------------------------------------
+# --------------------------------------------------------------------------------
+# What to apply
+# Your files are:
+# 	1. rbac/platform-observability-clusterrole.yaml
+# 	The first one defines the permissions to be merged into the built-in 
+# 	view role. 
+# 	2. rbac/team-alpha-platform-extended-view.yaml
+# 	The second one binds that view role to the team-alpha-sre 
+# 	group inside the team-alpha namespace.
+# --------------------------------------------------------------------------------
+
+.PHONY: apply-rbac-own-aggregated-clusterrole-platform-observability-with-lable-aggregate-to-view
+apply-rbac-own-aggregated-clusterrole-platform-observability-with-lable-aggregate-to-view: check-kubectl ## Apply aggregated ClusterRole for observability access
+	@test -f $(RBAC_PLATFORM_OBSERVABILITY_CLUSTERROLE_FILE) || (echo "Missing file: $(RBAC_PLATFORM_OBSERVABILITY_CLUSTERROLE_FILE)" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Apply platform observability ClusterRole"
+	@kubectl apply -f $(RBAC_PLATFORM_OBSERVABILITY_CLUSTERROLE_FILE)
+
+.PHONY: apply-rbac-rolebinding-to-give-group-team-alpha-sre-access-to-built-in-view-clusterrole-platform-observability-for-namespace-team-alpha
+apply-rbac-rolebinding-to-give-group-team-alpha-sre-access-to-built-in-view-clusterrole-platform-observability-for-namespace-team-alpha: check-kubectl ## Apply extended view RoleBinding for team-alpha SRE group
+	@test -f $(RBAC_TEAM_ALPHA_PLATFORM_EXTENDED_VIEW_FILE) || (echo "Missing file: $(RBAC_TEAM_ALPHA_PLATFORM_EXTENDED_VIEW_FILE)" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Apply RoleBinding to extend view with observability for team-alpha SRE"
+	@kubectl apply -f $(RBAC_TEAM_ALPHA_PLATFORM_EXTENDED_VIEW_FILE)
+
+.PHONY: apply-rbac-platform-observability
+apply-rbac-platform-observability: ## Apply both observability ClusterRole and team-alpha RoleBinding
+	@$(MAKE) -f Makefile_Quota_RBAC apply-rbac-own-aggregated-clusterrole-platform-observability-with-lable-aggregate-to-view
+	@$(MAKE) -f Makefile_Quota_RBAC apply-rbac-rolebinding-to-give-group-team-alpha-sre-access-to-built-in-view-clusterrole-platform-observability-for-namespace-team-alpha
+
+# -----------------------------------------------------------------------------------
+# ------------------------------ SECTION 5: SERVICEACCOUNTS -------------------------
+# -----------------------------------------------------------------------------------
+.PHONY: apply-a-serviceaccount-per-app-with-automountserviceaccounttoken-false-in-team-alpha-namespace
+apply-a-serviceaccount-per-app-with-automountserviceaccounttoken-false-in-team-alpha-namespace: check-kubectl ## Apply ServiceAccount for myapp (no token automount)
+	@test -f $(MYAPP_SERVICEACCOUNT_FILE) || (echo "Missing file: $(MYAPP_SERVICEACCOUNT_FILE)" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Apply ServiceAccount for myapp"
+	@kubectl apply -f $(MYAPP_SERVICEACCOUNT_FILE)
+
+.PHONY: apply-myapp-deployment-that-uses-myapp-servicecccount-in-team-alpha-namespace
+apply-myapp-deployment-that-uses-myapp-servicecccount-in-team-alpha-namespace: check-kubectl ## Apply myapp Deployment (uses myapp ServiceAccount)
+	@test -f $(MYAPP_DEPLOYMENT_FILE) || (echo "Missing file: $(MYAPP_DEPLOYMENT_FILE)" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Apply myapp Deployment"
+	@kubectl apply -f $(MYAPP_DEPLOYMENT_FILE)
+
+.PHONY: apply-myapp-serviceaccount-and-deployment
+apply-myapp-serviceaccount-and-deployment: ## Apply myapp ServiceAccount and Deployment
+	@$(MAKE) -f Makefile_Quota_RBAC apply-a-serviceaccount-per-app-with-automountserviceaccounttoken-false-in-team-alpha-namespace
+	@$(MAKE) -f Makefile_Quota_RBAC apply-myapp-deployment-that-uses-myapp-servicecccount-in-team-alpha-namespace
+
+.PHONY: apply-a-default-serviceaccount-with-automountserviceaccounttoken-false-in-team-alpha-namespace
+apply-a-default-serviceaccount-with-automountserviceaccounttoken-false-in-team-alpha-namespace: check-kubectl ## Disable token automount for default ServiceAccount in team-alpha
+	@test -f $(DEFAULT_SA_TEAM_ALPHA_FILE) || (echo "Missing file: $(DEFAULT_SA_TEAM_ALPHA_FILE)" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Apply default ServiceAccount hardening for team-alpha"
+	@kubectl apply -f $(DEFAULT_SA_TEAM_ALPHA_FILE)
+
+.PHONY: apply-a-serviceaccount-per-app-with-automountserviceaccounttoken-true-in-team-alpha-namespace
+apply-a-serviceaccount-per-app-with-automountserviceaccounttoken-true-in-team-alpha-namespace: check-kubectl ## Apply ServiceAccount for deploy-bot
+	@test -f $(DEPLOY_BOT_SERVICEACCOUNT_FILE) || (echo "Missing file: $(DEPLOY_BOT_SERVICEACCOUNT_FILE)" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Apply ServiceAccount for deploy-bot"
+	@kubectl apply -f $(DEPLOY_BOT_SERVICEACCOUNT_FILE)
+
+.PHONY: apply-deployments-rollout-role-that-can-get-list-patch-in-namespace-team-alpha
+apply-deployments-rollout-role-that-can-get-list-patch-in-namespace-team-alpha: check-kubectl ## Apply Role for deployment restarter in team-alpha
+	@test -f $(DEPLOY_BOT_ROLE_FILE) || (echo "Missing file: $(DEPLOY_BOT_ROLE_FILE)" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Apply Role deployment-restarter"
+	@kubectl apply -f $(DEPLOY_BOT_ROLE_FILE)
+
+.PHONY: apply-rolebinding-between-deployments-role-and-serviceaccount-in-namespace-team-alpha
+apply-rolebinding-between-deployments-role-and-serviceaccount-in-namespace-team-alpha: check-kubectl ## Bind deploy-bot ServiceAccount to deployment-restarter Role
+	@test -f $(DEPLOY_BOT_BINDING_FILE) || (echo "Missing file: $(DEPLOY_BOT_BINDING_FILE)" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Apply RoleBinding for deploy-bot"
+	@kubectl apply -f $(DEPLOY_BOT_BINDING_FILE)
+
+.PHONY: apply-deploy-bot-rbac
+apply-deploy-bot-rbac: ## Apply deploy-bot ServiceAccount, Role, and RoleBinding
+	@$(MAKE) -f Makefile_Quota_RBAC apply-a-serviceaccount-per-app-with-automountserviceaccounttoken-true-in-team-alpha-namespace
+	@$(MAKE) -f Makefile_Quota_RBAC apply-deployments-rollout-role-that-can-get-list-patch-in-namespace-team-alpha
+	@$(MAKE) -f Makefile_Quota_RBAC apply-rolebinding-between-deployments-role-and-serviceaccount-in-namespace-team-alpha
+
+# -----------------------------------------------------------------------------------
+# ------------------------------ SECTION 7: RBAC AUDIT TARGETS ----------------------
+# -----------------------------------------------------------------------------------
+# ----------------------------------------------------------------------------------------------------------------
+#						Auditing What an Identity Can Actually Do
+#					1. Never trust your own YAML
+#					2. Make targets for RBAC auditing
+#  Note: kubectl auth can-i is the official way to test whether a given subject can perform an action, 
+#		 and --list prints all effective permissions for that subject. rbac-lookup and who-can are krew 
+#        plugins that help you answer “what is bound to this identity?” and “who can perform this action?” 
+#        respectively.
+#
+# #   Examples:
+# 1. make rbac-can-deploy-bot-delete-deployments
+# → “Can deploy-bot delete deployments in team-alpha?”
+#
+# 2. make rbac-list-deploy-bot-permissions
+# → “Full effective permission list for deploy-bot in team-alpha”.
+#
+# 3. make rbac-can-dev-group-write-secrets
+# → “Does team-alpha-developers group have secret-write access?”.
+#
+# 4. rbac-cross-namespace-leak-check
+# → “Cross-namespace leak check — deploy-bot get pods in team-beta must be no”.
+#
+# 5. rbac-install-krew-plugins, rbac-lookup-deploy-bot, rbac-who-can-delete-deployments-team-alpha
+# → “Install rbac-lookup / who-can and use them to see bindings and who can delete deployments”.
+#
+# rbac-audit-checklist
+# → One command to run your whole RBAC audit sequence in one go.
+# ----------------------------------------------------------------------------------------------------------------
+
+.PHONY: rbac-can-deploy-bot-delete-deployments
+rbac-can-deploy-bot-delete-deployments: check-kubectl ## Check if deploy-bot can delete deployments in team-alpha
+	@printf '$(CYAN)%s$(RESET)\n' "Can $(DEPLOY_BOT_SA) delete deployments in $(TEAM_ALPHA_NS)?"
+	@kubectl auth can-i delete deployments \
+		--as=$(DEPLOY_BOT_SA) \
+		-n $(TEAM_ALPHA_NS) || (echo "kubectl auth can-i failed" && exit 1)
+
+.PHONY: rbac-list-deploy-bot-permissions
+rbac-list-deploy-bot-permissions: check-kubectl ## List all effective permissions for deploy-bot in team-alpha
+	@printf '$(CYAN)%s$(RESET)\n' "List effective permissions for $(DEPLOY_BOT_SA) in $(TEAM_ALPHA_NS)"
+	@kubectl auth can-i --list \
+		--as=$(DEPLOY_BOT_SA) \
+		-n $(TEAM_ALPHA_NS) || (echo "kubectl auth can-i --list failed" && exit 1)
+
+.PHONY: rbac-can-dev-group-write-secrets
+rbac-can-dev-group-write-secrets: check-kubectl ## Check if team-alpha-developers group can create secrets in team-alpha
+	@printf '$(CYAN)%s$(RESET)\n' "Can $(TEAM_ALPHA_DEV_GROUP) create secrets in $(TEAM_ALPHA_NS)?"
+	@kubectl auth can-i create secrets \
+		--as=someone@example.com \
+		--as-group=$(TEAM_ALPHA_DEV_GROUP) \
+		-n $(TEAM_ALPHA_NS) || (echo "kubectl auth can-i group check failed" && exit 1)
+
+.PHONY: rbac-cross-namespace-leak-check
+rbac-cross-namespace-leak-check: check-kubectl ## Ensure deploy-bot cannot get pods in team-beta
+	@printf '$(CYAN)%s$(RESET)\n' "Cross-namespace leak check: $(DEPLOY_BOT_SA) get pods in $(TEAM_BETA_NS)"
+	@kubectl auth can-i get pods \
+		--as=$(DEPLOY_BOT_SA) \
+		-n $(TEAM_BETA_NS) || (echo "kubectl auth can-i cross-namespace check failed" && exit 1)
+
+.PHONY: rbac-install-krew-plugins
+rbac-install-krew-plugins: check-kubectl ## Install RBAC audit plugins via krew (rbac-lookup, who-can) if not already installed
+	@kubectl krew list >/dev/null 2>&1 || (echo "krew is not installed or not configured" && exit 1)
+	@printf '$(CYAN)%s$(RESET)\n' "Ensure rbac-lookup and who-can are installed via krew"
+	@kubectl krew list | grep -q '^rbac-lookup$$' || kubectl krew install rbac-lookup
+	@kubectl krew list | grep -q '^who-can$$' || kubectl krew install who-can
+
+.PHONY: rbac-lookup-deploy-bot
+rbac-lookup-deploy-bot: check-kubectl rbac-install-krew-plugins ## Show RBAC bindings for deploy-bot ServiceAccount across the cluster
+	@printf '$(CYAN)%s$(RESET)\n' "rbac-lookup for deploy-bot ServiceAccount"
+	@kubectl rbac-lookup deploy-bot --kind serviceaccount || (echo "kubectl rbac-lookup failed" && exit 1)
+
+.PHONY: rbac-who-can-delete-deployments-team-alpha
+rbac-who-can-delete-deployments-team-alpha: check-kubectl rbac-install-krew-plugins ## Show who can delete deployments in team-alpha
+	@printf '$(CYAN)%s$(RESET)\n' "who-can delete deployments in $(TEAM_ALPHA_NS)"
+	@kubectl who-can delete deployments -n $(TEAM_ALPHA_NS) || (echo "kubectl who-can failed" && exit 1)
+
+.PHONY: rbac-audit-checklist
+rbac-audit-checklist: ## Run the full RBAC audit checklist
+	@$(MAKE) -f Makefile_Quota_RBAC rbac-can-deploy-bot-delete-deployments
+	@$(MAKE) -f Makefile_Quota_RBAC rbac-list-deploy-bot-permissions
+	@$(MAKE) -f Makefile_Quota_RBAC rbac-can-dev-group-write-secrets
+	@$(MAKE) -f Makefile_Quota_RBAC rbac-cross-namespace-leak-check
+	@$(MAKE) -f Makefile_Quota_RBAC rbac-lookup-deploy-bot
+	@$(MAKE) -f Makefile_Quota_RBAC rbac-who-can-delete-deployments-team-alpha
+
+.PHONY: cleanup-rbac-namespace-isolation-playbook
+cleanup-rbac-namespace-isolation-playbook: ## Remove namespaces and reset demo state before rerunning the playbook
+	@printf '$(CYAN)%s$(RESET)\n' "Cleanup: removing team-alpha and team-beta namespaces"
+	@$(MAKE) -f Makefile_Quota_RBAC delete-namespaces
+	@printf '$(CYAN)%s$(RESET)\n' "Cleanup: waiting for namespace deletion to complete"
+	@sleep 5

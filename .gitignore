@@ -1,0 +1,7 @@
+.secrets
+.env
+dist/
+downloads/
+*.tgz
+bin/*
+argocd-oci-helm-lab-repo-secret.yaml
