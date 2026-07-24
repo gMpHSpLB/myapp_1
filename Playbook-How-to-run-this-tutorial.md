@@ -91,3 +91,28 @@ make rbac-audit-checklist
 ```
 
 This playbook shows that the RBAC and namespace isolation design is not just conceptual—it is **codified, repeatable, and testable** via the Makefile.
+
+## RBAC audit tests (allow + deny)
+
+The `rbac-audit-checklist` target is more than a manual checklist — it is an automated test suite for RBAC:
+
+- **Assert-allow**:
+  - `deploy-bot` can `get/list/patch` deployments in `team-alpha` so it can trigger rollouts.
+
+- **Assert-deny**:
+  - `deploy-bot` cannot delete deployments in `team-alpha`.
+  - `deploy-bot` cannot get pods in `team-beta` (namespace isolation).
+  - `team-alpha-developers` cannot create secrets.
+
+- **Inspection**:
+  - `kubectl auth can-i --list` shows the effective permissions for `deploy-bot`.
+  - `rbac-lookup` shows which Roles/RoleBindings are attached to `deploy-bot`.
+  - `who-can` shows which identities can delete deployments in `team-alpha`.
+
+You can run all of these tests in one go:
+
+```bash
+make rbac-audit-checklist
+```
+
+If any assertion fails (for example, if `deploy-bot` suddenly can delete deployments or read pods in `team-beta`), the Make target fails, making RBAC drift visible immediately.

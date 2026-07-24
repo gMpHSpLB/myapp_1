@@ -64,6 +64,31 @@ assign-labels-and-pod-security-admission-enforcement-to-namespaces: check-kubect
 	@printf '$(CYAN)%s$(RESET)\n' "Label namespace $(NAMESPACE_TEAM_BETA)"
 	@kubectl label namespace $(NAMESPACE_TEAM_BETA) team=$(LABEL_TEAM_2) pod-security.kubernetes.io/enforce=$(POD_SECURITY_ADMISSION_ENFORCEMENT_LEVEL) --overwrite
 
+# Verify namespace labels and Pod Security
+# After create-namespaces-… and assign-labels-…, add a check target that inspects the namespace:
+# This kind of jsonpath-based verification is a common pattern to assert labels/annotations after an apply.
+.PHONY: verify-namespaces-and-pod-security
+verify-namespaces-and-pod-security: check-kubectl ## Verify team-alpha/beta namespaces labels and PodSecurity enforce=restricted
+	@printf '$(CYAN)%s$(RESET)\n' "Verify labels and PodSecurity for $(NAMESPACE_TEAM_ALPHA)"
+	@kubectl get ns $(NAMESPACE_TEAM_ALPHA) -o jsonpath='{.metadata.labels.team}' | grep -q "$(LABEL_TEAM_1)" || (echo "ERROR: team label missing/mismatch on $(NAMESPACE_TEAM_ALPHA)" && exit 1)
+	@kubectl get ns $(NAMESPACE_TEAM_ALPHA) -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' | grep -q "$(POD_SECURITY_ADMISSION_ENFORCEMENT_LEVEL)" || (echo "ERROR: PodSecurity enforce label missing/mismatch on $(NAMESPACE_TEAM_ALPHA)" && exit 1)
+
+	@printf '$(CYAN)%s$(RESET)\n' "Verify labels and PodSecurity for $(NAMESPACE_TEAM_BETA)"
+	@kubectl get ns $(NAMESPACE_TEAM_BETA) -o jsonpath='{.metadata.labels.team}' | grep -q "$(LABEL_TEAM_2)" || (echo "ERROR: team label missing/mismatch on $(NAMESPACE_TEAM_BETA)" && exit 1)
+	@kubectl get ns $(NAMESPACE_TEAM_BETA) -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' | grep -q "$(POD_SECURITY_ADMISSION_ENFORCEMENT_LEVEL)" || (echo "ERROR: PodSecurity enforce label missing/mismatch on $(NAMESPACE_TEAM_BETA)" && exit 1)
+
+# verify namespace-scoped RBAC objects
+.PHONY: verify-namespace-rbac-team-alpha
+verify-namespace-rbac-team-alpha: check-kubectl ## Verify Roles and RoleBinding exist in team-alpha
+	@printf '$(CYAN)%s$(RESET)\n' "Verify developer Role in $(NAMESPACE_TEAM_ALPHA)"
+	@kubectl get role -n $(NAMESPACE_TEAM_ALPHA) developer >/dev/null 2>&1 || (echo "ERROR: Role developer not found in $(NAMESPACE_TEAM_ALPHA)" && exit 1)
+
+	@printf '$(CYAN)%s$(RESET)\n' "Verify viewer Role in $(NAMESPACE_TEAM_ALPHA)"
+	@kubectl get role -n $(NAMESPACE_TEAM_ALPHA) viewer >/dev/null 2>&1 || (echo "ERROR: Role viewer not found in $(NAMESPACE_TEAM_ALPHA)" && exit 1)
+
+	@printf '$(CYAN)%s$(RESET)\n' "Verify developer RoleBinding in $(NAMESPACE_TEAM_ALPHA)"
+	@kubectl get rolebinding -n $(NAMESPACE_TEAM_ALPHA) developer-binding >/dev/null 2>&1 || (echo "ERROR: RoleBinding developer-binding not found in $(NAMESPACE_TEAM_ALPHA)" && exit 1)
+
 .PHONY: delete-namespaces
 delete-namespaces: check-kubectl ## Delete team-alpha and team-beta namespaces
 	@printf '$(CYAN)%s$(RESET)\n' "Delete namespace $(NAMESPACE_TEAM_ALPHA)"
@@ -81,6 +106,12 @@ apply-quota-to-namespace-team-alpha: check-kubectl ## Apply ResourceQuota for te
 	@printf '$(CYAN)%s$(RESET)\n' "Apply ResourceQuota for team-alpha"
 	@kubectl apply -f $(RESOURCE_QUOTA_TEAM_ALPHA_FILE)
 
+# Verify ResourceQuota
+# You can verify that the quota in team-alpha exists and has the expected name:
+.PHONY: verify-quota-team-alpha
+verify-quota-team-alpha: check-kubectl ## Verify ResourceQuota for team-alpha exists
+	@printf '$(CYAN)%s$(RESET)\n' "Verify ResourceQuota in $(NAMESPACE_TEAM_ALPHA)"
+	@kubectl -n $(NAMESPACE_TEAM_ALPHA) get resourcequota -o name | grep -q "resourcequota/team-alpha-quota" || (echo "ERROR: ResourceQuota team-alpha-quota not found in $(NAMESPACE_TEAM_ALPHA)" && exit 1)
 # -----------------------------------------------------------------------------------
 # ------------------------------ SECTION 3: NAMESPACE-SCOPED RBAC -------------------
 # -----------------------------------------------------------------------------------
@@ -133,6 +164,16 @@ apply-rbac-platform-observability: ## Apply both observability ClusterRole and t
 	@$(MAKE) -f Makefile_Quota_RBAC apply-rbac-own-aggregated-clusterrole-platform-observability-with-lable-aggregate-to-view
 	@$(MAKE) -f Makefile_Quota_RBAC apply-rbac-rolebinding-to-give-group-team-alpha-sre-access-to-built-in-view-clusterrole-platform-observability-for-namespace-team-alpha
 
+# Verify aggregated ClusterRole and RoleBinding
+# You can check the ClusterRole label and the RoleBinding:
+.PHONY: verify-platform-observability-rbac
+verify-platform-observability-rbac: check-kubectl ## Verify aggregated ClusterRole and team-alpha SRE RoleBinding
+	@printf '$(CYAN)%s$(RESET)\n' "Verify platform-observability ClusterRole aggregation label"
+	@kubectl get clusterrole platform-observability -o jsonpath='{.metadata.labels.rbac\.authorization\.k8s\.io/aggregate-to-view}' | grep -q "true" || (echo "ERROR: platform-observability ClusterRole missing aggregate-to-view label" && exit 1)
+
+	@printf '$(CYAN)%s$(RESET)\n' "Verify team-alpha view-plus-observability RoleBinding"
+	@kubectl -n $(NAMESPACE_TEAM_ALPHA) get rolebinding view-plus-observability >/dev/null 2>&1 || (echo "ERROR: RoleBinding view-plus-observability not found in $(NAMESPACE_TEAM_ALPHA)" && exit 1)
+	
 # -----------------------------------------------------------------------------------
 # ------------------------------ SECTION 5: SERVICEACCOUNTS -------------------------
 # -----------------------------------------------------------------------------------
@@ -183,6 +224,52 @@ apply-deploy-bot-rbac: ## Apply deploy-bot ServiceAccount, Role, and RoleBinding
 	@$(MAKE) -f Makefile_Quota_RBAC apply-deployments-rollout-role-that-can-get-list-patch-in-namespace-team-alpha
 	@$(MAKE) -f Makefile_Quota_RBAC apply-rolebinding-between-deployments-role-and-serviceaccount-in-namespace-team-alpha
 
+# Verify ServiceAccounts and Deployment
+# For myapp:
+.PHONY: verify-myapp-serviceaccount-and-deployment
+verify-myapp-serviceaccount-and-deployment: check-kubectl ## Verify myapp SA and Deployment exist and match expectations
+	@printf '$(CYAN)%s$(RESET)\n' "Verify myapp ServiceAccount in $(NAMESPACE_TEAM_ALPHA)"
+	@kubectl -n $(NAMESPACE_TEAM_ALPHA) get sa myapp >/dev/null 2>&1 || (echo "ERROR: ServiceAccount myapp not found in $(NAMESPACE_TEAM_ALPHA)" && exit 1)
+
+	@printf '$(CYAN)%s$(RESET)\n' "Verify myapp Deployment in $(NAMESPACE_TEAM_ALPHA)"
+	@kubectl -n $(NAMESPACE_TEAM_ALPHA) get deploy myapp >/dev/null 2>&1 || (echo "ERROR: Deployment myapp not found in $(NAMESPACE_TEAM_ALPHA)" && exit 1)
+
+	@printf '$(CYAN)%s$(RESET)\n' "Verify myapp Deployment uses ServiceAccount myapp"
+	@SA=$$(kubectl -n $(NAMESPACE_TEAM_ALPHA) get deploy myapp -o jsonpath='{.spec.template.spec.serviceAccountName}'); \
+	if [ "$$SA" != "myapp" ]; then \
+	  echo "ERROR: myapp Deployment is not using ServiceAccount 'myapp' (found: $$SA)"; \
+	  exit 1; \
+	else \
+	  echo "OK: myapp Deployment uses ServiceAccount 'myapp'"; \
+	fi
+
+# Verify ServiceAccounts and Deployment
+# For deploy-bot:
+.PHONY: verify-deploy-bot-rbac
+verify-deploy-bot-rbac: check-kubectl ## Verify deploy-bot SA, Role, and RoleBinding exist
+	@printf '$(CYAN)%s$(RESET)\n' "Verify deploy-bot ServiceAccount"
+	@kubectl -n $(NAMESPACE_TEAM_ALPHA) get sa deploy-bot >/dev/null 2>&1 || (echo "ERROR: ServiceAccount deploy-bot not found in $(NAMESPACE_TEAM_ALPHA)" && exit 1)
+
+	@printf '$(CYAN)%s$(RESET)\n' "Verify deploy-bot Role"
+	@kubectl -n $(NAMESPACE_TEAM_ALPHA) get role deployment-restarter >/dev/null 2>&1 || (echo "ERROR: Role deployment-restarter not found in $(NAMESPACE_TEAM_ALPHA)" && exit 1)
+
+	@printf '$(CYAN)%s$(RESET)\n' "Verify deploy-bot RoleBinding"
+	@kubectl -n $(NAMESPACE_TEAM_ALPHA) get rolebinding deploy-bot-binding >/dev/null 2>&1 || (echo "ERROR: RoleBinding deploy-bot-binding not found in $(NAMESPACE_TEAM_ALPHA)" && exit 1)
+
+# Verify default ServiceAccount hardening
+# You already apply:
+# 	apply-a-default-serviceaccount-with-automountserviceaccounttoken-false-in-team-alpha-namespace
+# 	but you don’t yet verify that the default ServiceAccount in team-alpha actually has automountServiceAccountToken: false
+.PHONY: verify-default-serviceaccount-hardening-team-alpha
+verify-default-serviceaccount-hardening-team-alpha: check-kubectl ## Verify default SA in team-alpha has automountServiceAccountToken=false
+	@printf '$(CYAN)%s$(RESET)\n' "Verify default ServiceAccount hardening in $(NAMESPACE_TEAM_ALPHA)"
+	@AUTOMOUNT=$$(kubectl -n $(NAMESPACE_TEAM_ALPHA) get sa default -o jsonpath='{.automountServiceAccountToken}'); \
+	if [ "$$AUTOMOUNT" != "false" ]; then \
+	  echo "ERROR: default ServiceAccount in $(NAMESPACE_TEAM_ALPHA) is not hardened (automountServiceAccountToken=$$AUTOMOUNT)"; \
+	  exit 1; \
+	else \
+	  echo "OK: default ServiceAccount in $(NAMESPACE_TEAM_ALPHA) has automountServiceAccountToken=false"; \
+	fi
 # -----------------------------------------------------------------------------------
 # ------------------------------ SECTION 7: RBAC AUDIT TARGETS ----------------------
 # -----------------------------------------------------------------------------------
@@ -214,13 +301,19 @@ apply-deploy-bot-rbac: ## Apply deploy-bot ServiceAccount, Role, and RoleBinding
 # rbac-audit-checklist
 # → One command to run your whole RBAC audit sequence in one go.
 # ----------------------------------------------------------------------------------------------------------------
-
 .PHONY: rbac-can-deploy-bot-delete-deployments
-rbac-can-deploy-bot-delete-deployments: check-kubectl ## Check if deploy-bot can delete deployments in team-alpha
-	@printf '$(CYAN)%s$(RESET)\n' "Can $(DEPLOY_BOT_SA) delete deployments in $(TEAM_ALPHA_NS)?"
-	@kubectl auth can-i delete deployments \
+rbac-can-deploy-bot-delete-deployments: check-kubectl ## Assert deploy-bot CANNOT delete deployments in team-alpha
+	@printf '$(CYAN)%s$(RESET)\n' "Assert: $(DEPLOY_BOT_SA) must NOT be able to delete deployments in $(TEAM_ALPHA_NS)"
+	@OUT=$$(kubectl auth can-i delete deployments \
 		--as=$(DEPLOY_BOT_SA) \
-		-n $(TEAM_ALPHA_NS) || (echo "kubectl auth can-i failed" && exit 1)
+		-n $(TEAM_ALPHA_NS)); \
+	echo "$$OUT"; \
+	if [ "$$OUT" = "yes" ]; then \
+	  echo "ERROR: deploy-bot CAN delete deployments in $(TEAM_ALPHA_NS) (violates least privilege)"; \
+	  exit 1; \
+	else \
+	  echo "OK: deploy-bot cannot delete deployments in $(TEAM_ALPHA_NS)"; \
+	fi
 
 .PHONY: rbac-list-deploy-bot-permissions
 rbac-list-deploy-bot-permissions: check-kubectl ## List all effective permissions for deploy-bot in team-alpha
@@ -230,19 +323,33 @@ rbac-list-deploy-bot-permissions: check-kubectl ## List all effective permission
 		-n $(TEAM_ALPHA_NS) || (echo "kubectl auth can-i --list failed" && exit 1)
 
 .PHONY: rbac-can-dev-group-write-secrets
-rbac-can-dev-group-write-secrets: check-kubectl ## Check if team-alpha-developers group can create secrets in team-alpha
-	@printf '$(CYAN)%s$(RESET)\n' "Can $(TEAM_ALPHA_DEV_GROUP) create secrets in $(TEAM_ALPHA_NS)?"
-	@kubectl auth can-i create secrets \
+rbac-can-dev-group-write-secrets: check-kubectl ## Assert team-alpha-developers CANNOT create secrets in team-alpha
+	@printf '$(CYAN)%s$(RESET)\n' "Assert: $(TEAM_ALPHA_DEV_GROUP) must NOT be able to create secrets in $(TEAM_ALPHA_NS)"
+	@OUT=$$(kubectl auth can-i create secrets \
 		--as=someone@example.com \
 		--as-group=$(TEAM_ALPHA_DEV_GROUP) \
-		-n $(TEAM_ALPHA_NS) || (echo "kubectl auth can-i group check failed" && exit 1)
+		-n $(TEAM_ALPHA_NS)); \
+	echo "$$OUT"; \
+	if [ "$$OUT" = "yes" ]; then \
+	  echo "ERROR: $(TEAM_ALPHA_DEV_GROUP) CAN create secrets in $(TEAM_ALPHA_NS) (too much privilege)"; \
+	  exit 1; \
+	else \
+	  echo "OK: $(TEAM_ALPHA_DEV_GROUP) cannot create secrets in $(TEAM_ALPHA_NS)"; \
+	fi
 
 .PHONY: rbac-cross-namespace-leak-check
-rbac-cross-namespace-leak-check: check-kubectl ## Ensure deploy-bot cannot get pods in team-beta
-	@printf '$(CYAN)%s$(RESET)\n' "Cross-namespace leak check: $(DEPLOY_BOT_SA) get pods in $(TEAM_BETA_NS)"
-	@kubectl auth can-i get pods \
+rbac-cross-namespace-leak-check: check-kubectl ## Assert deploy-bot CANNOT get pods in team-beta
+	@printf '$(CYAN)%s$(RESET)\n' "Assert: $(DEPLOY_BOT_SA) must NOT be able to get pods in $(TEAM_BETA_NS)"
+	@OUT=$$(kubectl auth can-i get pods \
 		--as=$(DEPLOY_BOT_SA) \
-		-n $(TEAM_BETA_NS) || (echo "kubectl auth can-i cross-namespace check failed" && exit 1)
+		-n $(TEAM_BETA_NS)); \
+	echo "$$OUT"; \
+	if [ "$$OUT" = "yes" ]; then \
+	  echo "ERROR: $(DEPLOY_BOT_SA) CAN get pods in $(TEAM_BETA_NS) (namespace isolation broken)"; \
+	  exit 1; \
+	else \
+	  echo "OK: $(DEPLOY_BOT_SA) cannot get pods in $(TEAM_BETA_NS)"; \
+	fi
 
 .PHONY: rbac-install-krew-plugins
 rbac-install-krew-plugins: check-kubectl ## Install RBAC audit plugins via krew (rbac-lookup, who-can) if not already installed
@@ -261,14 +368,110 @@ rbac-who-can-delete-deployments-team-alpha: check-kubectl rbac-install-krew-plug
 	@printf '$(CYAN)%s$(RESET)\n' "who-can delete deployments in $(TEAM_ALPHA_NS)"
 	@kubectl who-can delete deployments -n $(TEAM_ALPHA_NS) || (echo "kubectl who-can failed" && exit 1)
 
+# Here’s how you can add “assert allow” checks so your RBAC audit suite verifies both:
+# 		Permissions that must be denied (namespace isolation, secret write).
+# 		Permissions that must be allowed (deploy-bot rollout operations).
+# This gives you:
+# 		3 assert-allow checks: get/list/patch on deployments.
+# 		3 assert-deny checks: delete deployments, secret write, cross-namespace pods.
+# 		3 inspection commands: --list, rbac-lookup, who-can.
+#
+# assert-allow means: “check that this identity is allowed to do this one specific thing, and fail if it is not.”
+# 	For your deploy-bot, the allow checks mean:
+# 		It can get deployments in team-alpha.
+# 		It can list deployments in team-alpha.
+# 		It can patch deployments in team-alpha.
+
+# 	That matches its job: it is allowed to interact with deployments enough to trigger rollouts, but not delete them or change unrelated things.
+
+# 	Why it matters
+# 	Think of it like a permission test:
+# 		Assert allow = “this should be permitted.”
+# 		Assert deny = “this should be blocked.”
+
+# Assert: deploy-bot CAN get deployments
+.PHONY: rbac-assert-deploy-bot-can-get-deployments
+rbac-assert-deploy-bot-can-get-deployments: check-kubectl ## Assert deploy-bot CAN get deployments in team-alpha
+	@printf '$(CYAN)%s$(RESET)\n' "Assert: $(DEPLOY_BOT_SA) must be able to GET deployments in $(TEAM_ALPHA_NS)"
+	@OUT=$$(kubectl auth can-i get deployments \
+		--as=$(DEPLOY_BOT_SA) \
+		-n $(TEAM_ALPHA_NS)); \
+	echo "$$OUT"; \
+	if [ "$$OUT" = "yes" ]; then \
+	  echo "OK: $(DEPLOY_BOT_SA) can GET deployments in $(TEAM_ALPHA_NS)"; \
+	else \
+	  echo "ERROR: $(DEPLOY_BOT_SA) CANNOT GET deployments in $(TEAM_ALPHA_NS) (rollout role too restrictive)"; \
+	  exit 1; \
+	fi
+
+#Assert: deploy-bot CAN list deployments
+.PHONY: rbac-assert-deploy-bot-can-list-deployments
+rbac-assert-deploy-bot-can-list-deployments: check-kubectl ## Assert deploy-bot CAN list deployments in team-alpha
+	@printf '$(CYAN)%s$(RESET)\n' "Assert: $(DEPLOY_BOT_SA) must be able to LIST deployments in $(TEAM_ALPHA_NS)"
+	@OUT=$$(kubectl auth can-i list deployments \
+		--as=$(DEPLOY_BOT_SA) \
+		-n $(TEAM_ALPHA_NS)); \
+	echo "$$OUT"; \
+	if [ "$$OUT" = "yes" ]; then \
+	  echo "OK: $(DEPLOY_BOT_SA) can LIST deployments in $(TEAM_ALPHA_NS)"; \
+	else \
+	  echo "ERROR: $(DEPLOY_BOT_SA) CANNOT LIST deployments in $(TEAM_ALPHA_NS) (rollout role too restrictive)"; \
+	  exit 1; \
+	fi
+
+Assert: deploy-bot CAN patch deployments
+.PHONY: rbac-assert-deploy-bot-can-patch-deployments
+rbac-assert-deploy-bot-can-patch-deployments: check-kubectl ## Assert deploy-bot CAN patch deployments in team-alpha
+	@printf '$(CYAN)%s$(RESET)\n' "Assert: $(DEPLOY_BOT_SA) must be able to PATCH deployments in $(TEAM_ALPHA_NS)"
+	@OUT=$$(kubectl auth can-i patch deployments \
+		--as=$(DEPLOY_BOT_SA) \
+		-n $(TEAM_ALPHA_NS)); \
+	echo "$$OUT"; \
+	if [ "$$OUT" = "yes" ]; then \
+	  echo "OK: $(DEPLOY_BOT_SA) can PATCH deployments in $(TEAM_ALPHA_NS)"; \
+	else \
+	  echo "ERROR: $(DEPLOY_BOT_SA) CANNOT PATCH deployments in $(TEAM_ALPHA_NS) (cannot trigger rollouts)"; \
+	  exit 1; \
+	fi
+
 .PHONY: rbac-audit-checklist
-rbac-audit-checklist: ## Run the full RBAC audit checklist
+rbac-audit-checklist: ## Run the full RBAC audit checklist (assert allow + assert deny)
+	@$(MAKE) -f Makefile_Quota_RBAC rbac-assert-deploy-bot-can-get-deployments
+	@$(MAKE) -f Makefile_Quota_RBAC rbac-assert-deploy-bot-can-list-deployments
+	@$(MAKE) -f Makefile_Quota_RBAC rbac-assert-deploy-bot-can-patch-deployments
 	@$(MAKE) -f Makefile_Quota_RBAC rbac-can-deploy-bot-delete-deployments
 	@$(MAKE) -f Makefile_Quota_RBAC rbac-list-deploy-bot-permissions
 	@$(MAKE) -f Makefile_Quota_RBAC rbac-can-dev-group-write-secrets
 	@$(MAKE) -f Makefile_Quota_RBAC rbac-cross-namespace-leak-check
 	@$(MAKE) -f Makefile_Quota_RBAC rbac-lookup-deploy-bot
 	@$(MAKE) -f Makefile_Quota_RBAC rbac-who-can-delete-deployments-team-alpha
+
+# ---------------------------------------------------------------------------------------------------
+#					 “apply + verify” meta-targets
+# ---------------------------------------------------------------------------------------------------
+ .PHONY: setup-namespaces-and-quota-with-verification
+setup-namespaces-and-quota-with-verification: ## Apply namespaces, labels, quota, then verify
+	@$(MAKE) -f Makefile_Quota_RBAC create-namespaces-for-team-alpha-and-team-beta
+	@$(MAKE) -f Makefile_Quota_RBAC assign-labels-and-pod-security-admission-enforcement-to-namespaces
+	@$(MAKE) -f Makefile_Quota_RBAC apply-quota-to-namespace-team-alpha
+	@$(MAKE) -f Makefile_Quota_RBAC verify-namespaces-and-pod-security
+	@$(MAKE) -f Makefile_Quota_RBAC verify-quota-team-alpha
+
+.PHONY: setup-myapp-with-verification
+setup-myapp-with-verification: ## Apply myapp SA + Deployment, then verify
+	@$(MAKE) -f Makefile_Quota_RBAC apply-myapp-serviceaccount-and-deployment
+	@$(MAKE) -f Makefile_Quota_RBAC verify-myapp-serviceaccount-and-deployment
+
+.PHONY: setup-deploy-bot-with-verification
+setup-deploy-bot-with-verification: ## Apply deploy-bot RBAC, then verify objects
+	@$(MAKE) -f Makefile_Quota_RBAC apply-deploy-bot-rbac
+	@$(MAKE) -f Makefile_Quota_RBAC verify-deploy-bot-rbac
+
+.PHONY: setup-platform-observability-with-verification
+setup-platform-observability-with-verification: ## Apply aggregated ClusterRole + RoleBinding, then verify
+	@$(MAKE) -f Makefile_Quota_RBAC apply-rbac-platform-observability
+	@$(MAKE) -f Makefile_Quota_RBAC verify-platform-observability-rbac
+
 
 .PHONY: cleanup-rbac-namespace-isolation-playbook
 cleanup-rbac-namespace-isolation-playbook: ## Remove namespaces and reset demo state before rerunning the playbook

@@ -119,18 +119,15 @@ through a binding [web:68][web:79].
 ### RBAC building blocks
 
 | Object                | Scope                                  | Purpose                                    |
-|-----------------------|----------------------------------------|--------------------------------------------|
+|                       |                                        |                                            |
 | `Role`                | Namespace                              | Defines permissions inside one namespace   |
-|-------------------------------------------------------------------------------------------------------------|
 | `RoleBinding`         | Namespace                              | Grants a `Role` or `ClusterRole` to a user,| 
 |                       |                                        |      group, or ServiceAccount              |
-|-------------------------------------------------------------------------------------------------------------|
 | `ClusterRole`         | Cluster-wide or reusable               | Defines permissions that can be reused     | 
 |                       |                                        |      across namespaces                     |
-|-------------------------------------------------------------------------------------------------------------|
 | `ClusterRoleBinding`  | Cluster-wide                           | Grants a `ClusterRole` cluster-wide        |
 |                       |                                        |                                            |
-|-------------------------------------------------------------------------------------------------------------|
+
 
 ### Example: developer Role
 ```yaml
